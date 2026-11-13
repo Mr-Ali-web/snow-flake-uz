@@ -7,25 +7,30 @@ const TUNE = {
   pileGrowth: 5,     // uyum qanchalik tez o'sadi
   windMax: 70,       // shamol kuchi (px/s)
   sweepRadius: 90,   // kursor qorni qancha masofadan itaradi
+  windStrength: { weak: .45, medium: 1, strong: 1.7 },
 };
 const STEP = 3;
-let S = { density: 'medium', wind: true, accumulate: true, paused: false, playMode: false };
-let W = 0, H = 0, DPR = 1, groundY = 0, raf = 0, last = 0;
+let S = { density: 'medium', wind: true, windStrength: 'medium', tint: 'white', accumulate: true, paused: false, playMode: false };
+let W = 0, H = 0, DPR = 1, groundY = 0, raf = 0, last = 0, lastInput = performance.now(), fullscreen = false;
 let flakes = [], debris = [], ledges = [], balls = [], playMode = false, dragBall = null, pointer = {x:0,y:0};
 const cur = { x: -999, y: -999, vx: 0, vy: 0, t: 0 };
 const rand = (a, b) => a + Math.random() * (b - a);
 
 // ---- Spritelar: sovuq ko'k qirra oq fonda ham ko'rinishi uchun ----
-function makeSprite(kind) {
+function makeSprite(kind, variant = 0) {
   const N = 64, c = document.createElement('canvas'); c.width = c.height = N;
   const g = c.getContext('2d'); g.translate(N / 2, N / 2);
   if (kind === 'crystal') {
     g.lineCap = 'round';
     for (const [lw, col] of [[5, 'rgba(150,175,210,.5)'], [2.6, '#fff']]) {
       g.strokeStyle = col; g.lineWidth = lw;
-      for (let i = 0; i < 6; i++) {
-        g.rotate(Math.PI / 3); g.beginPath();
-        g.moveTo(0, 0); g.lineTo(0, -26); g.moveTo(0, -14); g.lineTo(-8, -22); g.moveTo(0, -14); g.lineTo(8, -22); g.stroke();
+      const arms = variant === 2 ? 4 : variant === 3 ? 8 : 6;
+      for (let i = 0; i < arms; i++) {
+        g.rotate(Math.PI * 2 / arms); g.beginPath(); g.moveTo(0, 0); g.lineTo(0, -26);
+        if (variant === 1 || variant === 3) { g.moveTo(0,-10);g.lineTo(-7,-17);g.moveTo(0,-10);g.lineTo(7,-17);g.moveTo(0,-19);g.lineTo(-5,-24);g.moveTo(0,-19);g.lineTo(5,-24); }
+        else if (variant === 2) { g.moveTo(-6,-20);g.lineTo(0,-26);g.lineTo(6,-20); }
+        else { g.moveTo(0,-14);g.lineTo(-8,-22);g.moveTo(0,-14);g.lineTo(8,-22); }
+        g.stroke();
       }
     }
   } else {
@@ -40,14 +45,14 @@ function makeSprite(kind) {
   }
   return c;
 }
-const SPR = { dot: makeSprite('dot'), soft: makeSprite('soft'), crystal: makeSprite('crystal') };
+const SPR = { dot: makeSprite('dot'), soft: makeSprite('soft'), crystals: [0,1,2,3].map(v => makeSprite('crystal',v)) };
 
 // ---- Parchalar ----
 function newFlake(f, anywhere) {
   const z = Math.pow(Math.random(), 1.4); // 0 = uzoq, 1 = yaqin
   f.z = z; f.x = rand(-50, W + 50); f.y = anywhere ? rand(-20, groundY) : rand(-60, -10);
   if (z > 0.85) { f.kind = 'soft'; f.size = rand(20, 34); f.a = rand(0.18, 0.3); }
-  else if (z > 0.4 && Math.random() < 0.18) { f.kind = 'crystal'; f.size = rand(11, 17); f.a = rand(0.7, 0.95); f.spin = rand(-1, 1); }
+  else if (z > 0.4 && Math.random() < 0.3) { f.kind = 'crystal'; f.shape = Math.floor(Math.random()*SPR.crystals.length); f.size = rand(10, 18); f.a = rand(0.7, 0.95); f.spin = rand(-1, 1); }
   else { f.kind = 'dot'; f.size = 2.5 + z * 7; f.a = 0.35 + z * 0.6; f.spin = 0; }
   f.vy = 22 + z * 58 + rand(0, 10); f.vx = 0; f.ix = 0; f.iy = 0;
   f.ph = rand(0, 6.28); f.sw = rand(0.6, 1.6); f.amp = rand(8, 22) * (0.4 + z); f.rot = rand(0, 6.28);
@@ -58,7 +63,7 @@ function fit() {
   while (flakes.length < want) flakes.push(newFlake({}, true));
   flakes.length = Math.min(flakes.length, want);
 }
-const wind = (t) => !S.wind ? 0 : TUNE.windMax * (0.5 * Math.sin(t * 0.13) + 0.35 * Math.sin(t * 0.37 + 1.7) + Math.max(0, Math.sin(t * 0.05)) * 0.6 * Math.sin(t * 0.9));
+const wind = (t) => !S.wind ? 0 : TUNE.windMax * TUNE.windStrength[S.windStrength || 'medium'] * (0.5 * Math.sin(t * 0.13) + 0.35 * Math.sin(t * 0.37 + 1.7) + Math.max(0, Math.sin(t * 0.05)) * 0.6 * Math.sin(t * 0.9));
 
 // ---- Qor uyumi: har bir "tokcha" (ekran osti yoki oyna tepasi) o'z balandliklar xaritasiga ega ----
 function mkLedge(id, w, seed) {
@@ -156,7 +161,7 @@ function drawPile(L) {
   ctx.save(); ctx.translate(L.x, L.y);
   ctx.beginPath(); for (const [a, b] of L.segs) ctx.rect(a, -mx - 6, b - a, mx + 8); ctx.clip();
   const g = ctx.createLinearGradient(0, -mx, 0, 0);
-  g.addColorStop(0, '#fff'); g.addColorStop(1, '#cddcf0');
+  g.addColorStop(0, S.tint === 'cool-blue' ? '#f4f9ff' : '#fff'); g.addColorStop(1, S.tint === 'cool-blue' ? '#9fc3f1' : '#cddcf0');
   ctx.beginPath(); ctx.moveTo(0, 0);
   for (let i = 0; i < L.h.length; i++) ctx.lineTo(i * STEP, -L.h[i]);
   ctx.lineTo(L.w, 0); ctx.closePath(); ctx.fillStyle = g; ctx.fill();
@@ -171,6 +176,8 @@ function drawPile(L) {
 
 // ---- Asosiy sikl ----
 function frame(now) {
+  const fps = fullscreen ? 12 : now - lastInput < 2500 ? 60 : 28;
+  if (now - last < 1000 / fps) { raf = requestAnimationFrame(frame); return; }
   raf = requestAnimationFrame(frame);
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   const t = now / 1000, w = wind(t);
@@ -207,10 +214,11 @@ function frame(now) {
   for (const kind of ['dot', 'crystal', 'soft']) for (const f of flakes) { // yaqin parchalar tepada
     if (f.kind !== kind) continue;
     ctx.globalAlpha = f.a; const s = f.size;
-    if (kind === 'crystal') { ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.rot); ctx.drawImage(SPR.crystal, -s / 2, -s / 2, s, s); ctx.restore(); }
+    if (kind === 'crystal') { ctx.globalAlpha = f.a * (.78 + .22 * Math.sin(t * 2.2 + f.ph)); ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.rot); ctx.drawImage(SPR.crystals[f.shape || 0], -s / 2, -s / 2, s, s); ctx.restore(); }
     else ctx.drawImage(SPR[kind], f.x - s / 2, f.y - s / 2, s, s);
   }
   for (const p of debris) { ctx.globalAlpha = p.life; ctx.drawImage(SPR.dot, p.x - p.s, p.y - p.s, p.s * 2, p.s * 2); }
+  if (S.wind && Math.abs(w) > 25) { ctx.globalAlpha = Math.min(.12,Math.abs(w)/900);ctx.strokeStyle=S.tint==='cool-blue'?'#b8d8ff':'#fff';ctx.lineWidth=1;for(let i=0;i<5;i++){const x=((t*70*(w<0?-1:1)+i*W/5)%W+W)%W,y=i*H/5+Math.sin(t+i)*18;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+(w<0?-30:30),y-3);ctx.stroke();} }
   balls.sort((a,b)=>a.y-b.y).forEach(drawBall);drawSnowman();
   ctx.globalAlpha = 1;
 }
@@ -229,8 +237,10 @@ snow.onSettings((s) => { S = s; setPlay(!!s.playMode); fit(); if (!S.accumulate)
 snow.onClear(() => { ledges.forEach((L) => L.h.fill(0)); balls=[]; });
 snow.onWindows((d) => W && setWindows(d));
 snow.onPlay(setPlay);
+snow.onFullscreen((v) => { fullscreen = !!v; });
 snow.onCursor((p) => {
   const now = performance.now(), dt = (now - cur.t) / 1000;
+  lastInput = now;
   if (dt > 0 && dt < 0.2) { cur.vx = cur.vx * 0.5 + (p.x - cur.x) / dt * 0.5; cur.vy = cur.vy * 0.5 + (p.y - cur.y) / dt * 0.5; }
   else { cur.vx = 0; cur.vy = 0; }
   cur.x = p.x; cur.y = p.y; cur.t = now;
@@ -238,13 +248,13 @@ snow.onCursor((p) => {
 addEventListener('resize', resize);
 function setPlay(v){playMode=v;cv.style.pointerEvents=v?'auto':'none';if(!v)dragBall=null;}
 cv.addEventListener('pointerdown',(e)=>{
-  if(!playMode)return;pointer={x:e.offsetX,y:e.offsetY};
+  if(!playMode)return;lastInput=performance.now();pointer={x:e.offsetX,y:e.offsetY};
   const existing=[...balls].reverse().find(b=>Math.hypot(pointer.x-b.x,pointer.y-b.y)<b.r);
   if(existing){dragBall=existing;dragBall.resting=false;dragBall.stack=0;cv.setPointerCapture(e.pointerId);return;}
   const L=ledges.find(q=>{const x=pointer.x-q.x,j=Math.floor(x/STEP);return j>=0&&j<q.h.length&&q.segs.some(s=>x>=s[0]&&x<s[1])&&pointer.y>=q.y-q.h[j]-8&&pointer.y<=q.y+5;});
   if(!L)return;dragBall={x:pointer.x,y:pointer.y,startY:pointer.y,r:10,vx:0,vy:0,stack:0,resting:false};balls.push(dragBall);cv.setPointerCapture(e.pointerId);
 });
-cv.addEventListener('pointermove',(e)=>{pointer={x:e.offsetX,y:e.offsetY};if(!dragBall)return;const d=Math.hypot(e.movementX,e.movementY);dragBall.r=Math.min(48,dragBall.r+d*.025);
+cv.addEventListener('pointermove',(e)=>{lastInput=performance.now();pointer={x:e.offsetX,y:e.offsetY};if(!dragBall)return;const d=Math.hypot(e.movementX,e.movementY);dragBall.r=Math.min(48,dragBall.r+d*.025);
   for(const L of ledges){const x=pointer.x-L.x,j=Math.floor(x/STEP);if(j>=0&&j<L.h.length&&L.segs.some(s=>x>=s[0]&&x<s[1])&&Math.abs(pointer.y-(L.y-L.h[j]))<dragBall.r+24)takeSnow(L,x,d*.025);}
 });
 cv.addEventListener('pointerup',()=>{if(!dragBall)return;dragBall.vx=cur.vx*.12;dragBall.vy=10;dragBall.resting=false;

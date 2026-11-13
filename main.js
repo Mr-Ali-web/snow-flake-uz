@@ -7,7 +7,7 @@ const { ledgesFor } = require('./ledges');
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on('window-all-closed', () => {}); // tray ilova: oynalar yopilsa ham ishlayveradi
 
-const defaults = { density: 'medium', wind: true, accumulate: true, windows: true, paused: false, playMode: false };
+const defaults = { density: 'medium', wind: true, windStrength: 'medium', tint: 'white', accumulate: true, windows: true, paused: false, playMode: false };
 let settings = { ...defaults };
 let overlays = [];
 let tray = null;
@@ -50,6 +50,8 @@ const broadcast = (ch, data) => overlays.forEach(({ win }) => !win.isDestroyed()
 function sendWindows(o) {
   if (o.win.isDestroyed() || !o.ready) return;
   const list = settings.windows && !settings.paused ? ledgesFor(rects, o.bounds) : [];
+  const fullscreen = rects.some((r) => r[1] <= o.bounds.x + 2 && r[2] <= o.bounds.y + 2 && r[3] >= o.bounds.x + o.bounds.width - 12 && r[4] >= o.bounds.y + o.bounds.height - 12);
+  o.win.webContents.send('fullscreen', fullscreen);
   const key = JSON.stringify(list);
   if (key === o.key) return;
   o.key = key; o.win.webContents.send('windows', list);
@@ -81,6 +83,11 @@ function buildMenu() {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Qor kuchi', submenu: [dens('light', 'Yengil'), dens('medium', "O'rtacha"), dens('heavy', 'Kuchli')] },
     { label: 'Shamol', type: 'checkbox', checked: settings.wind, click: (i) => update({ wind: i.checked }) },
+    { label: 'Shamol kuchi', submenu: [['weak','Kuchsiz'],['medium',"O'rtacha"],['strong','Kuchli']].map(([id,label]) => ({ label, type:'radio', checked:settings.windStrength===id, click:()=>update({windStrength:id}) })) },
+    { label: 'Qor rangi', submenu: [
+      { label:'Oq', type:'radio', checked:settings.tint==='white', click:()=>update({tint:'white'}) },
+      { label:'Sovuq ko‘k', type:'radio', checked:settings.tint==='cool-blue', click:()=>update({tint:'cool-blue'}) },
+    ] },
     { label: 'Qor uyumi', type: 'checkbox', checked: settings.accumulate, click: (i) => update({ accumulate: i.checked }) },
     { label: 'Oynalar ustida qor', type: 'checkbox', checked: settings.windows, click: (i) => update({ windows: i.checked }) },
     { label: "To'xtatib turish", type: 'checkbox', checked: settings.paused, click: (i) => update({ paused: i.checked }) },
