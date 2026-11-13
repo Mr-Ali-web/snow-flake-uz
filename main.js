@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, screen, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, screen, nativeImage, ipcMain, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const scanner = require('./scanner');
@@ -7,7 +7,7 @@ const { ledgesFor } = require('./ledges');
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on('window-all-closed', () => {}); // tray ilova: oynalar yopilsa ham ishlayveradi
 
-const defaults = { density: 'medium', wind: true, accumulate: true, windows: true, paused: false };
+const defaults = { density: 'medium', wind: true, accumulate: true, windows: true, paused: false, playMode: false };
 let settings = { ...defaults };
 let overlays = [];
 let tray = null;
@@ -25,13 +25,13 @@ function createOverlays() {
     const win = new BrowserWindow({
       ...bounds,
       transparent: true, frame: false, hasShadow: false, resizable: false, movable: false,
-      focusable: false, skipTaskbar: true, alwaysOnTop: true, show: false, enableLargerThanScreen: true,
+      focusable: settings.playMode, skipTaskbar: true, alwaysOnTop: true, show: false, enableLargerThanScreen: true,
       ...(process.platform === 'darwin' ? { type: 'panel' } : {}),
       webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
     });
     win.setAlwaysOnTop(true, 'screen-saver');
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    win.setIgnoreMouseEvents(true);
+    win.setIgnoreMouseEvents(!settings.playMode);
     win.setBounds(bounds);
     win.loadFile(path.join(__dirname, 'overlay.html'));
     const entry = { win, bounds, ready: false, key: '' };
@@ -64,6 +64,17 @@ function onRects(raw) {
   pushWindows();
 }
 function update(patch) { settings = { ...settings, ...patch }; save(); broadcast('settings', settings); pushWindows(); buildMenu(); }
+function setPlayMode(enabled) {
+  settings.playMode = enabled;
+  if (enabled) globalShortcut.register('Escape', () => settings.playMode && setPlayMode(false));
+  else globalShortcut.unregister('Escape');
+  overlays.forEach(({ win }) => {
+    if (win.isDestroyed()) return;
+    win.setFocusable(enabled); win.setIgnoreMouseEvents(!enabled);
+  });
+  save(); broadcast('settings', settings); broadcast('play', enabled); buildMenu();
+}
+function togglePlayMode() { setPlayMode(!settings.playMode); }
 
 function buildMenu() {
   const dens = (id, label) => ({ label, type: 'radio', checked: settings.density === id, click: () => update({ density: id }) });
@@ -74,6 +85,7 @@ function buildMenu() {
     { label: 'Oynalar ustida qor', type: 'checkbox', checked: settings.windows, click: (i) => update({ windows: i.checked }) },
     { label: "To'xtatib turish", type: 'checkbox', checked: settings.paused, click: (i) => update({ paused: i.checked }) },
     { label: 'Uyumni tozalash', click: () => broadcast('clear') },
+    { label: 'O‘yin rejimi (Ctrl/Cmd+Shift+S)', type: 'checkbox', checked: settings.playMode, click: togglePlayMode },
     { type: 'separator' },
     { label: 'Kompyuter yoqilganda ishga tushirish', type: 'checkbox',
       checked: app.getLoginItemSettings().openAtLogin, click: (i) => app.setLoginItemSettings({ openAtLogin: i.checked }) },
@@ -82,7 +94,7 @@ function buildMenu() {
 }
 
 app.whenReady().then(() => {
-  try { settings = { ...defaults, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) }; } catch {}
+  try { settings = { ...defaults, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')), playMode: false }; } catch {}
   if (process.platform === 'darwin') app.dock?.hide();
   const icon = nativeImage.createFromPath(path.join(__dirname, 'assets', process.platform === 'darwin' ? 'trayTemplate.png' : 'tray.png'));
   tray = new Tray(icon);
@@ -91,6 +103,9 @@ app.whenReady().then(() => {
   createOverlays();
   stopScan = scanner.start(onRects);
   app.on('will-quit', () => stopScan && stopScan());
+  globalShortcut.register(process.platform === 'darwin' ? 'Command+Shift+S' : 'Control+Shift+S', togglePlayMode);
+  ipcMain.on('play-exit', () => settings.playMode && setPlayMode(false));
+  app.on('will-quit', () => globalShortcut.unregisterAll());
 
   let t; const rebuild = () => { clearTimeout(t); t = setTimeout(createOverlays, 500); };
   ['display-added', 'display-removed', 'display-metrics-changed'].forEach((e) => screen.on(e, rebuild));

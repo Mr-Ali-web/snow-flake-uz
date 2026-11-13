@@ -9,9 +9,9 @@ const TUNE = {
   sweepRadius: 90,   // kursor qorni qancha masofadan itaradi
 };
 const STEP = 3;
-let S = { density: 'medium', wind: true, accumulate: true, paused: false };
+let S = { density: 'medium', wind: true, accumulate: true, paused: false, playMode: false };
 let W = 0, H = 0, DPR = 1, groundY = 0, raf = 0, last = 0;
-let flakes = [], debris = [], ledges = [];
+let flakes = [], debris = [], ledges = [], balls = [], playMode = false, dragBall = null, pointer = {x:0,y:0};
 const cur = { x: -999, y: -999, vx: 0, vy: 0, t: 0 };
 const rand = (a, b) => a + Math.random() * (b - a);
 
@@ -88,6 +88,35 @@ function addSnow(L, lx, amt) {
   for (let k = -4; k <= 4; k++) {
     const i = c + k; if (i < 0 || i >= L.h.length) continue;
     L.h[i] = Math.min(L.cap[i], L.h[i] + amt * Math.exp(-k * k / 6));
+  }
+}
+function takeSnow(L, lx, amt) {
+  const c = (lx / STEP) | 0; let taken = 0;
+  for (let k=-4;k<=4;k++) { const i=c+k; if(i<0||i>=L.h.length) continue; const n=Math.min(L.h[i],amt*Math.exp(-k*k/6)); L.h[i]-=n; taken+=n; }
+  return taken;
+}
+function drawBall(b) {
+  const g=ctx.createRadialGradient(b.x-b.r*.35,b.y-b.r*.45,1,b.x,b.y,b.r*1.25);
+  g.addColorStop(0,'#fff');g.addColorStop(.72,'#eef5ff');g.addColorStop(1,'#aebfd8');ctx.fillStyle=g;
+  ctx.beginPath();ctx.arc(b.x,b.y,b.r,0,Math.PI*2);ctx.fill();ctx.strokeStyle='rgba(130,155,190,.45)';ctx.stroke();
+}
+function drawSnowman() {
+  for(const base of balls.filter(b=>b.stack>=2)) {
+    const mid=balls.find(b=>b.stack===1&&Math.abs(b.x-base.x)<4), head=balls.find(b=>b.stack===0&&mid&&Math.abs(b.x-base.x)<4&&b.y<mid.y);
+    if(!mid||!head)continue;ctx.fillStyle='#172536';
+    for(const side of [-1,1]){ctx.beginPath();ctx.arc(head.x+side*head.r*.32,head.y-head.r*.14,Math.max(1.5,head.r*.07),0,7);ctx.fill();}
+    ctx.fillStyle='#f29a43';ctx.beginPath();ctx.moveTo(head.x,head.y);ctx.lineTo(head.x+head.r*.65,head.y+2);ctx.lineTo(head.x,head.y+head.r*.12);ctx.fill();
+    for(const y of [mid.y-mid.r*.2,mid.y+mid.r*.2,base.y-base.r*.25]){ctx.beginPath();ctx.arc(base.x,y,2.2,0,7);ctx.fill();}
+  }
+}
+function updateBalls(dt) {
+  for(let i=balls.length-1;i>=0;i--){const b=balls[i];if(b===dragBall){b.x=pointer.x;b.y=pointer.y;continue;}
+    if(b.resting&&Math.abs(b.vx)<1)continue;b.vy+=520*dt;b.x+=b.vx*dt;b.y+=b.vy*dt;let floor=null;
+    for(const L of ledges){const x=b.x-L.x,j=Math.floor(x/STEP);if(j>=0&&j<L.h.length&&L.segs.some(s=>x>=s[0]&&x<s[1])){const y=L.y-L.h[j];if(b.y+b.r>=y&&b.y-b.r<L.y)floor={L,x,y};}}
+    if(floor&&b.vy>0){b.y=floor.y-b.r;b.vy=0;b.vx*=.92;if(Math.abs(b.vx)<5){b.vx=0;b.resting=true;}
+      if(b.dropHeight>b.r*5){balls.splice(i,1);for(let k=0;k<10;k++)debris.push({x:b.x,y:b.y,vx:rand(-100,100),vy:rand(-150,20),life:1,s:rand(2,5)});continue;}
+      if(floor.L.id!=='ground')addSnow(floor.L,floor.x,b.r*.025);
+    }else if(b.y>H+100)balls.splice(i,1);else b.dropHeight=Math.max(b.dropHeight||0,b.y-b.startY);
   }
 }
 function land(f, py) { // parcha tokchaning tepasidan o'tsa qo'nadi
@@ -171,6 +200,7 @@ function frame(now) {
     if (L.id !== 'ground') { const k = Math.min(1, dt * 20); L.x += (L.tx - L.x) * k; L.y += (L.ty - L.y) * k; }
     if (S.accumulate) { if (sp > 80) sweep(L, sp, dt); relax(L); }
   }
+  updateBalls(dt);
 
   ctx.clearRect(0, 0, W, H);
   if (S.accumulate) for (const L of ledges) drawPile(L);
@@ -181,6 +211,7 @@ function frame(now) {
     else ctx.drawImage(SPR[kind], f.x - s / 2, f.y - s / 2, s, s);
   }
   for (const p of debris) { ctx.globalAlpha = p.life; ctx.drawImage(SPR.dot, p.x - p.s, p.y - p.s, p.s * 2, p.s * 2); }
+  balls.sort((a,b)=>a.y-b.y).forEach(drawBall);drawSnowman();
   ctx.globalAlpha = 1;
 }
 
@@ -194,9 +225,10 @@ function resize() {
 function run() { cancelAnimationFrame(raf); if (S.paused) { ctx.clearRect(0, 0, W, H); return; } last = performance.now(); raf = requestAnimationFrame(frame); }
 
 snow.onInit((d) => { groundY = d.groundY; S = d.settings; resize(); run(); });
-snow.onSettings((s) => { S = s; fit(); if (!S.accumulate) ledges.forEach((L) => L.h.fill(0)); run(); });
-snow.onClear(() => ledges.forEach((L) => L.h.fill(0)));
+snow.onSettings((s) => { S = s; setPlay(!!s.playMode); fit(); if (!S.accumulate) ledges.forEach((L) => L.h.fill(0)); run(); });
+snow.onClear(() => { ledges.forEach((L) => L.h.fill(0)); balls=[]; });
 snow.onWindows((d) => W && setWindows(d));
+snow.onPlay(setPlay);
 snow.onCursor((p) => {
   const now = performance.now(), dt = (now - cur.t) / 1000;
   if (dt > 0 && dt < 0.2) { cur.vx = cur.vx * 0.5 + (p.x - cur.x) / dt * 0.5; cur.vy = cur.vy * 0.5 + (p.y - cur.y) / dt * 0.5; }
@@ -204,3 +236,19 @@ snow.onCursor((p) => {
   cur.x = p.x; cur.y = p.y; cur.t = now;
 });
 addEventListener('resize', resize);
+function setPlay(v){playMode=v;cv.style.pointerEvents=v?'auto':'none';if(!v)dragBall=null;}
+cv.addEventListener('pointerdown',(e)=>{
+  if(!playMode)return;pointer={x:e.offsetX,y:e.offsetY};
+  const existing=[...balls].reverse().find(b=>Math.hypot(pointer.x-b.x,pointer.y-b.y)<b.r);
+  if(existing){dragBall=existing;dragBall.resting=false;dragBall.stack=0;cv.setPointerCapture(e.pointerId);return;}
+  const L=ledges.find(q=>{const x=pointer.x-q.x,j=Math.floor(x/STEP);return j>=0&&j<q.h.length&&q.segs.some(s=>x>=s[0]&&x<s[1])&&pointer.y>=q.y-q.h[j]-8&&pointer.y<=q.y+5;});
+  if(!L)return;dragBall={x:pointer.x,y:pointer.y,startY:pointer.y,r:10,vx:0,vy:0,stack:0,resting:false};balls.push(dragBall);cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener('pointermove',(e)=>{pointer={x:e.offsetX,y:e.offsetY};if(!dragBall)return;const d=Math.hypot(e.movementX,e.movementY);dragBall.r=Math.min(48,dragBall.r+d*.025);
+  for(const L of ledges){const x=pointer.x-L.x,j=Math.floor(x/STEP);if(j>=0&&j<L.h.length&&L.segs.some(s=>x>=s[0]&&x<s[1])&&Math.abs(pointer.y-(L.y-L.h[j]))<dragBall.r+24)takeSnow(L,x,d*.025);}
+});
+cv.addEventListener('pointerup',()=>{if(!dragBall)return;dragBall.vx=cur.vx*.12;dragBall.vy=10;dragBall.resting=false;
+  const base=balls.find(b=>b!==dragBall&&b.resting&&b.stack<2&&dragBall.r<b.r*.92&&Math.abs(b.x-dragBall.x)<b.r*.55&&Math.abs(dragBall.y+dragBall.r-(b.y-b.r))<dragBall.r*1.5);
+  if(base){dragBall.x=base.x;dragBall.y=base.y-base.r-dragBall.r;dragBall.stack=base.stack+1;dragBall.resting=true;}dragBall=null;
+});
+addEventListener('keydown',(e)=>{if(playMode&&e.key==='Escape')snow.exitPlay();});
