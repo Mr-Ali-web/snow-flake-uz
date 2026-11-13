@@ -1,19 +1,15 @@
 {
-  "name": "flake",
-  "private": true,
+  "name": "snow-flake-uz",
   "version": "0.1.0",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "tauri": "tauri"
-  },
-  "dependencies": {
-    "@tauri-apps/api": "^2"
-  },
-  "devDependencies": {
-    "@tauri-apps/cli": "^2",
-    "vite": "^6.0.0"
+  "description": "Ish stolida qor yog'adi (Windows va macOS)",
+  "main": "main.js",
+  "scripts": { "start": "electron .", "dist": "electron-builder" },
+  "devDependencies": { "electron": "^33.0.0", "electron-builder": "^25.0.0" },
+  "build": {
+    "appId": "uz.snowflake.app",
+    "productName": "Snow Flake UZ",
+    "files": ["main.js", "preload.js", "overlay.html", "renderer.js", "assets/**"],
+    "mac": { "category": "public.app-category.utilities", "target": ["dmg"] },
+    "win": { "target": ["nsis"] }
   }
 }
