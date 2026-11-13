@@ -1,0 +1,1410 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Flake</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "SF Pro Display", "Segoe UI", Inter, system-ui, -apple-system, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+        pointer-events: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      #scene {
+        position: fixed;
+        inset: 0;
+        display: block;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+      }
+
+      .countdown {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-width: 224px;
+        padding: 16px 20px 15px;
+        border-radius: 20px;
+        color: rgba(255, 255, 255, 0.94);
+        background: linear-gradient(
+          135deg,
+          rgba(255, 255, 255, 0.16) 0%,
+          rgba(200, 220, 255, 0.08) 48%,
+          rgba(255, 255, 255, 0.045) 100%
+        );
+        border: 1px solid rgba(255, 255, 255, 0.28);
+        box-shadow:
+          0 18px 45px rgba(8, 16, 40, 0.28),
+          0 2px 8px rgba(8, 16, 40, 0.16),
+          inset 0 1px 0 rgba(255, 255, 255, 0.38),
+          inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+        backdrop-filter: blur(16px) saturate(1.25);
+        -webkit-backdrop-filter: blur(16px) saturate(1.25);
+        pointer-events: none;
+        overflow: hidden;
+      }
+
+      .countdown::before {
+        content: "";
+        position: absolute;
+        inset: -40% -20% auto -20%;
+        height: 75%;
+        background: radial-gradient(
+          ellipse at 30% 0%,
+          rgba(150, 130, 255, 0.28),
+          rgba(150, 130, 255, 0) 70%
+        );
+        pointer-events: none;
+      }
+
+      .countdown__title {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.66);
+      }
+
+      .countdown__title::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #bcd8ff;
+        box-shadow: 0 0 10px 2px rgba(160, 200, 255, 0.85);
+      }
+
+      .countdown__grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+      }
+
+      .countdown__cell {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1px;
+        padding: 6px 2px 5px;
+        border-radius: 11px;
+        background: rgba(255, 255, 255, 0.055);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+      }
+
+      .countdown__value {
+        font-size: 21px;
+        font-weight: 650;
+        line-height: 1.05;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.02em;
+        text-shadow: 0 0 18px rgba(170, 205, 255, 0.4);
+      }
+
+      .countdown__unit {
+        font-size: 8.5px;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.48);
+      }
+
+      .countdown__year {
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        color: rgba(255, 255, 255, 0.42);
+        text-align: right;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+
+    <script type="module">
+      "use strict";
+
+      /* ------------------------------------------------------------------ */
+      /* Utilities                                                          */
+      /* ------------------------------------------------------------------ */
+
+      const clamp = (value, min, max) =>
+        value < min ? min : value > max ? max : value;
+
+      const rand = (min, max) => min + Math.random() * (max - min);
+
+      function mulberry32(seed) {
+        let a = seed >>> 0;
+        return () => {
+          a |= 0;
+          a = (a + 0x6d2b79f5) | 0;
+          let t = Math.imul(a ^ (a >>> 15), 1 | a);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      function roundRect(ctx, x, y, w, h, r) {
+        const radius = Math.min(r, w / 2, h / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + radius, y);
+        ctx.arcTo(x + w, y, x + w, y + h, radius);
+        ctx.arcTo(x + w, y + h, x, y + h, radius);
+        ctx.arcTo(x, y + h, x, y, radius);
+        ctx.arcTo(x, y, x + w, y, radius);
+        ctx.closePath();
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Aurora                                                             */
+      /* ------------------------------------------------------------------ */
+
+      class Aurora {
+        constructor(width, height) {
+          this.width = width;
+          this.height = height;
+          this.time = 0;
+          this.enabled = true;
+        }
+
+        resize(width, height) {
+          this.width = width;
+          this.height = height;
+        }
+
+        update(dt) {
+          if (!this.enabled) return;
+          this.time += dt;
+        }
+
+        draw(ctx) {
+          if (!this.enabled) return;
+
+          const { width, height, time } = this;
+          const unit = Math.max(width, height);
+
+          ctx.save();
+          ctx.globalCompositeOperation = "lighter";
+
+          const blobs = [
+            {
+              x: 0.24 + Math.sin(time * 0.11) * 0.08,
+              y: 0.1 + Math.cos(time * 0.09) * 0.04,
+              r: 0.58,
+              color: [128, 92, 255],
+              alpha: 0.11,
+            },
+            {
+              x: 0.62 + Math.cos(time * 0.08 + 1.4) * 0.1,
+              y: 0.06 + Math.sin(time * 0.12 + 0.8) * 0.05,
+              r: 0.5,
+              color: [70, 170, 255],
+              alpha: 0.09,
+            },
+            {
+              x: 0.85 + Math.sin(time * 0.07 + 2.1) * 0.07,
+              y: 0.16 + Math.cos(time * 0.1 + 2.6) * 0.04,
+              r: 0.44,
+              color: [186, 104, 255],
+              alpha: 0.075,
+            },
+            {
+              x: 0.44 + Math.cos(time * 0.06 + 4.2) * 0.12,
+              y: 0.2 + Math.sin(time * 0.08 + 3.1) * 0.05,
+              r: 0.62,
+              color: [90, 220, 220],
+              alpha: 0.045,
+            },
+          ];
+
+          for (const blob of blobs) {
+            const cx = width * blob.x;
+            const cy = height * blob.y;
+            const radius = unit * blob.r;
+            const [r, g, b] = blob.color;
+
+            const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+            gradient.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${blob.alpha})`);
+            gradient.addColorStop(
+              0.45,
+              `rgba(${r}, ${g}, ${b}, ${blob.alpha * 0.45})`,
+            );
+            gradient.addColorStop(
+              0.75,
+              `rgba(${r}, ${g}, ${b}, ${blob.alpha * 0.12})`,
+            );
+            gradient.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, width, height * 0.62);
+          }
+
+          ctx.globalAlpha = 0.05;
+          for (let i = 0; i < 5; i++) {
+            const phase = time * 0.18 + i * 1.7;
+            const x =
+              width * (0.14 + i * 0.18) + Math.sin(phase) * width * 0.05;
+            const ribbon = ctx.createLinearGradient(
+              x,
+              0,
+              x + width * 0.08,
+              height * 0.5,
+            );
+            ribbon.addColorStop(0, "rgba(170, 150, 255, 0.7)");
+            ribbon.addColorStop(0.5, "rgba(110, 200, 255, 0.24)");
+            ribbon.addColorStop(1, "rgba(110, 200, 255, 0)");
+            ctx.fillStyle = ribbon;
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.quadraticCurveTo(
+              x + Math.sin(phase * 1.3) * width * 0.05,
+              height * 0.25,
+              x + Math.sin(phase * 0.7) * width * 0.08,
+              height * 0.5,
+            );
+            ctx.lineTo(x + width * 0.1, height * 0.5);
+            ctx.quadraticCurveTo(
+              x + width * 0.1 + Math.sin(phase * 0.9) * width * 0.04,
+              height * 0.22,
+              x + width * 0.07,
+              0,
+            );
+            ctx.closePath();
+            ctx.fill();
+          }
+
+          ctx.restore();
+        }
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Snow                                                               */
+      /* ------------------------------------------------------------------ */
+
+      const SNOW_BUCKET = 5;
+      const MAX_FLAKES = 320;
+
+      class SnowLayer {
+        constructor(width, height) {
+          this.canvas = document.createElement("canvas");
+          this.canvas.width = Math.max(1, Math.ceil(width));
+          this.canvas.height = Math.max(1, Math.ceil(height));
+          this.ctx = this.canvas.getContext("2d");
+          this.heights = new Float32Array(
+            Math.ceil(this.canvas.width / SNOW_BUCKET) + 1,
+          );
+        }
+
+        add(x, amount, blob) {
+          const index = clamp(
+            Math.floor(x / SNOW_BUCKET),
+            0,
+            this.heights.length - 1,
+          );
+          this.heights[index] = Math.min(
+            this.canvas.height,
+            this.heights[index] + amount,
+          );
+
+          const h = this.heights[index];
+          const px = index * SNOW_BUCKET + SNOW_BUCKET * 0.5;
+          const py = this.canvas.height - h;
+          const size = rand(12, 22);
+          this.ctx.globalAlpha = 0.92;
+          this.ctx.drawImage(blob, px - size * 0.5, py - size * 0.5, size, size);
+          this.ctx.globalAlpha = 1;
+        }
+
+        carve(x, halfWidth) {
+          const from = clamp(
+            Math.floor((x - halfWidth) / SNOW_BUCKET),
+            0,
+            this.heights.length - 1,
+          );
+          const to = clamp(
+            Math.floor((x + halfWidth) / SNOW_BUCKET),
+            0,
+            this.heights.length - 1,
+          );
+
+          for (let i = from; i <= to; i++) this.heights[i] = 0;
+
+          const left = from * SNOW_BUCKET;
+          const width = (to - from + 1) * SNOW_BUCKET;
+          this.ctx.clearRect(left, 0, width, this.canvas.height);
+        }
+
+        load() {
+          let sum = 0;
+          for (let i = 0; i < this.heights.length; i++) sum += this.heights[i];
+          return sum / (this.heights.length * this.canvas.height);
+        }
+      }
+
+      function createSnowBlob() {
+        const size = 32;
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        const gradient = ctx.createRadialGradient(
+          size / 2,
+          size / 2,
+          0,
+          size / 2,
+          size / 2,
+          size / 2,
+        );
+        gradient.addColorStop(0, "rgba(255, 255, 255, 1)");
+        gradient.addColorStop(0.35, "rgba(248, 252, 255, 0.92)");
+        gradient.addColorStop(0.7, "rgba(226, 240, 255, 0.42)");
+        gradient.addColorStop(1, "rgba(214, 232, 255, 0)");
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, size, size);
+        return canvas;
+      }
+
+      function eraseCircle(ctx, x, y, radius) {
+        ctx.save();
+        ctx.globalCompositeOperation = "destination-out";
+        const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+        gradient.addColorStop(0, "rgba(0, 0, 0, 1)");
+        gradient.addColorStop(0.62, "rgba(0, 0, 0, 0.85)");
+        gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      class SnowSystem {
+        constructor(width, height) {
+          this.width = width;
+          this.height = height;
+          this.enabled = true;
+          this.flakes = [];
+          this.windows = new Map();
+          this.rects = [];
+          this.blob = createSnowBlob();
+          this.bottom = new SnowLayer(width, 150);
+          this.initFlakes();
+        }
+
+        resize(width, height) {
+          this.width = width;
+          this.height = height;
+          this.bottom = new SnowLayer(width, 150);
+          this.windows.clear();
+          this.initFlakes();
+        }
+
+        setWindows(rects) {
+          this.rects = rects;
+          const alive = new Set();
+
+          for (const rect of rects) {
+            alive.add(rect.id);
+            const existing = this.windows.get(rect.id);
+            const layerWidth = Math.min(rect.w, 3840);
+            const layerHeight = clamp(rect.h * 0.3, 70, 130);
+
+            if (!existing) {
+              this.windows.set(rect.id, {
+                layer: new SnowLayer(layerWidth, layerHeight),
+              });
+              continue;
+            }
+
+            if (
+              Math.abs(existing.layer.canvas.width - layerWidth) > 2 ||
+              Math.abs(existing.layer.canvas.height - layerHeight) > 2
+            ) {
+              this.windows.set(rect.id, {
+                layer: new SnowLayer(layerWidth, layerHeight),
+              });
+            }
+          }
+
+          for (const id of this.windows.keys()) {
+            if (!alive.has(id)) this.windows.delete(id);
+          }
+        }
+
+        bottomLoad() {
+          return this.bottom.load();
+        }
+
+        clearAt(x, y, radius) {
+          for (const rect of this.rects) {
+            const entry = this.windows.get(rect.id);
+            if (!entry) continue;
+
+            const layer = entry.layer;
+            const left = rect.x;
+            const top = rect.y - layer.canvas.height;
+
+            if (
+              x + radius < left ||
+              x - radius > left + layer.canvas.width ||
+              y + radius < top ||
+              y - radius > top + layer.canvas.height
+            ) {
+              continue;
+            }
+
+            eraseCircle(layer.ctx, x - left, y - top, radius);
+            layer.carve(x - left, radius);
+          }
+
+          const bottomTop = this.height - this.bottom.canvas.height;
+          if (y + radius >= bottomTop) {
+            eraseCircle(this.bottom.ctx, x, y - bottomTop, radius);
+            this.bottom.carve(x, radius);
+          }
+
+          const r2 = radius * radius;
+          for (let i = this.flakes.length - 1; i >= 0; i--) {
+            const flake = this.flakes[i];
+            const dx = flake.x - x;
+            const dy = flake.y - y;
+            if (dx * dx + dy * dy <= r2) {
+              this.flakes[i] = this.flakes[this.flakes.length - 1];
+              this.flakes.pop();
+            }
+          }
+        }
+
+        update(dt, time) {
+          if (!this.enabled) return;
+
+          const wind =
+            Math.sin(time * 0.12) * 10 + Math.sin(time * 0.047 + 1.7) * 6;
+
+          for (const flake of this.flakes) {
+            const previousY = flake.y;
+
+            flake.x +=
+              (wind * (0.35 + flake.r * 0.1) +
+                Math.sin(time * flake.sway + flake.phase) * 8) *
+              dt;
+            flake.y += flake.vy * dt;
+
+            if (flake.x < -24) flake.x = this.width + 24;
+            else if (flake.x > this.width + 24) flake.x = -24;
+
+            let landed = false;
+
+            for (const rect of this.rects) {
+              const top = rect.y;
+              if (top < 0 || top > this.height) continue;
+              if (flake.x < rect.x || flake.x > rect.x + rect.w) continue;
+              if (previousY <= top && flake.y >= top) {
+                const entry = this.windows.get(rect.id);
+                if (entry) {
+                  entry.layer.add(
+                    flake.x - rect.x,
+                    rand(2.6, 6.4),
+                    this.blob,
+                  );
+                }
+                landed = true;
+                break;
+              }
+            }
+
+            if (!landed && flake.y >= this.height - 2) {
+              this.bottom.add(flake.x, rand(3.0, 7.0), this.blob);
+              landed = true;
+            }
+
+            if (landed) this.respawn(flake);
+          }
+        }
+
+        draw(ctx) {
+          for (const rect of this.rects) {
+            const entry = this.windows.get(rect.id);
+            if (!entry) continue;
+            const layer = entry.layer;
+            ctx.drawImage(
+              layer.canvas,
+              rect.x,
+              rect.y - layer.canvas.height,
+            );
+          }
+
+          ctx.drawImage(
+            this.bottom.canvas,
+            0,
+            this.height - this.bottom.canvas.height,
+          );
+
+          ctx.save();
+          ctx.fillStyle = "#ffffff";
+          for (const flake of this.flakes) {
+            ctx.globalAlpha = flake.alpha;
+            ctx.beginPath();
+            ctx.arc(flake.x, flake.y, flake.r, 0, Math.PI * 2);
+            ctx.fill();
+
+            if (flake.r > 1.9) {
+              ctx.globalAlpha = flake.alpha * 0.12;
+              ctx.beginPath();
+              ctx.arc(flake.x, flake.y, flake.r * 2.6, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+          ctx.restore();
+        }
+
+        initFlakes() {
+          const target = clamp(
+            Math.floor((this.width * this.height) / 7000),
+            100,
+            MAX_FLAKES,
+          );
+          this.flakes = [];
+          for (let i = 0; i < target; i++) {
+            const flake = {
+              x: 0,
+              y: 0,
+              r: 1,
+              vy: 30,
+              phase: 0,
+              sway: 1,
+              alpha: 1,
+            };
+            this.respawn(flake, true);
+            this.flakes.push(flake);
+          }
+        }
+
+        respawn(flake, initial = false) {
+          flake.x = Math.random() * this.width;
+          flake.y = initial
+            ? Math.random() * this.height
+            : -12 - Math.random() * 80;
+          flake.r = rand(0.8, 3.1);
+          flake.vy = 18 + flake.r * 13 + Math.random() * 22;
+          flake.phase = Math.random() * Math.PI * 2;
+          flake.sway = rand(0.5, 1.9);
+          flake.alpha = rand(0.45, 0.98);
+        }
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Frost border                                                       */
+      /* ------------------------------------------------------------------ */
+
+      const FROST_SEED = 0x5eed1ce;
+
+      function makeFrostTexture(size) {
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        const rng = mulberry32(FROST_SEED);
+
+        const haze = ctx.createRadialGradient(0, 0, 0, 0, 0, size * 1.35);
+        haze.addColorStop(0, "rgba(225, 242, 255, 0.2)");
+        haze.addColorStop(0.35, "rgba(214, 236, 255, 0.1)");
+        haze.addColorStop(0.7, "rgba(200, 228, 255, 0.03)");
+        haze.addColorStop(1, "rgba(200, 228, 255, 0)");
+        ctx.fillStyle = haze;
+        ctx.fillRect(0, 0, size, size);
+
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+
+        const branch = (x, y, angle, length, depth) => {
+          if (depth <= 0 || length < 4) return;
+
+          const nx = x + Math.cos(angle) * length;
+          const ny = y + Math.sin(angle) * length;
+
+          ctx.strokeStyle = `rgba(232, 246, 255, ${0.08 + depth * 0.028})`;
+          ctx.lineWidth = Math.max(0.6, depth * 0.62);
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.lineTo(nx, ny);
+          ctx.stroke();
+
+          if (depth >= 2) {
+            const side = length * 0.34;
+            for (const t of [0.34, 0.58, 0.78]) {
+              const px = x + (nx - x) * t;
+              const py = y + (ny - y) * t;
+              const sideAngle =
+                angle + (rng() < 0.5 ? -1 : 1) * (0.55 + rng() * 0.45);
+              const sideLength = side * (0.6 + rng() * 0.7);
+
+              ctx.strokeStyle = `rgba(226, 243, 255, ${0.06 + depth * 0.02})`;
+              ctx.lineWidth = Math.max(0.5, depth * 0.34);
+              ctx.beginPath();
+              ctx.moveTo(px, py);
+              ctx.lineTo(
+                px + Math.cos(sideAngle) * sideLength,
+                py + Math.sin(sideAngle) * sideLength,
+              );
+              ctx.stroke();
+            }
+          }
+
+          branch(
+            nx,
+            ny,
+            angle + (rng() - 0.5) * 0.55,
+            length * (0.62 + rng() * 0.12),
+            depth - 1,
+          );
+
+          if (rng() < 0.72) {
+            branch(
+              nx,
+              ny,
+              angle - (rng() - 0.5) * 0.65,
+              length * (0.48 + rng() * 0.14),
+              depth - 1,
+            );
+          }
+        };
+
+        for (let i = 0; i < 8; i++) {
+          const angle = 0.08 + (i / 7) * 1.32 + (rng() - 0.5) * 0.12;
+          branch(0, 0, angle, size * (0.24 + rng() * 0.16), 5);
+        }
+
+        for (let i = 0; i < 260; i++) {
+          const distance = Math.pow(rng(), 1.65) * size * 1.08;
+          const angle = rng() * Math.PI * 0.5;
+          const x = Math.cos(angle) * distance;
+          const y = Math.sin(angle) * distance;
+          const radius = 0.6 + rng() * 2.2;
+          const alpha = 0.18 + rng() * 0.5;
+
+          const dot = ctx.createRadialGradient(x, y, 0, x, y, radius * 3.2);
+          dot.addColorStop(0, `rgba(245, 252, 255, ${alpha})`);
+          dot.addColorStop(0.45, `rgba(224, 242, 255, ${alpha * 0.55})`);
+          dot.addColorStop(1, "rgba(214, 236, 255, 0)");
+          ctx.fillStyle = dot;
+          ctx.beginPath();
+          ctx.arc(x, y, radius * 3.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        for (let i = 0; i < 46; i++) {
+          const distance = Math.pow(rng(), 1.4) * size * 0.9;
+          const angle = rng() * Math.PI * 0.5;
+          const x = Math.cos(angle) * distance;
+          const y = Math.sin(angle) * distance;
+          const arm = 1.5 + rng() * 3.4;
+
+          ctx.strokeStyle = `rgba(240, 250, 255, ${0.2 + rng() * 0.4})`;
+          ctx.lineWidth = 0.7;
+          ctx.beginPath();
+          ctx.moveTo(x - arm, y);
+          ctx.lineTo(x + arm, y);
+          ctx.moveTo(x, y - arm);
+          ctx.lineTo(x, y + arm);
+          ctx.stroke();
+        }
+
+        return canvas;
+      }
+
+      class Frost {
+        constructor(width, height) {
+          this.width = 1;
+          this.height = 1;
+          this.layer = document.createElement("canvas");
+          this.lctx = this.layer.getContext("2d");
+          this.melt = document.createElement("canvas");
+          this.mctx = this.melt.getContext("2d");
+          this.texture = null;
+          this.lastX = Number.NEGATIVE_INFINITY;
+          this.lastY = Number.NEGATIVE_INFINITY;
+          this.enabled = true;
+          this.fadeAccumulator = 0;
+          this.resize(width, height);
+        }
+
+        resize(width, height) {
+          this.width = Math.max(1, Math.floor(width));
+          this.height = Math.max(1, Math.floor(height));
+
+          this.layer.width = this.width;
+          this.layer.height = this.height;
+          this.melt.width = this.width;
+          this.melt.height = this.height;
+          this.lctx = this.layer.getContext("2d");
+          this.mctx = this.melt.getContext("2d");
+
+          const size = Math.round(
+            clamp(Math.min(this.width, this.height) * 0.42, 240, 460),
+          );
+          this.texture = makeFrostTexture(size);
+
+          this.lastX = Number.NEGATIVE_INFINITY;
+          this.lastY = Number.NEGATIVE_INFINITY;
+        }
+
+        setCursor(x, y) {
+          if (!this.enabled) {
+            this.lastX = x;
+            this.lastY = y;
+            return;
+          }
+
+          if (!Number.isFinite(this.lastX)) {
+            this.lastX = x;
+            this.lastY = y;
+          }
+
+          const ctx = this.mctx;
+          ctx.save();
+          ctx.globalCompositeOperation = "destination-out";
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+
+          ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+          ctx.lineWidth = 78;
+          ctx.beginPath();
+          ctx.moveTo(this.lastX, this.lastY);
+          ctx.lineTo(x, y);
+          ctx.stroke();
+
+          const gradient = ctx.createRadialGradient(x, y, 0, x, y, 116);
+          gradient.addColorStop(0, "rgba(0, 0, 0, 0.98)");
+          gradient.addColorStop(0.5, "rgba(0, 0, 0, 0.62)");
+          gradient.addColorStop(0.8, "rgba(0, 0, 0, 0.2)");
+          gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
+          ctx.fillStyle = gradient;
+          ctx.beginPath();
+          ctx.arc(x, y, 116, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+
+          this.lastX = x;
+          this.lastY = y;
+        }
+
+        update(dt) {
+          if (!this.enabled) return;
+
+          this.fadeAccumulator += dt;
+          if (this.fadeAccumulator < 0.1) return;
+
+          const ctx = this.mctx;
+          const fade =
+            1 - Math.pow(0.5, this.fadeAccumulator / 7.5);
+          ctx.save();
+          ctx.globalCompositeOperation = "destination-out";
+          ctx.fillStyle = `rgba(0, 0, 0, ${fade})`;
+          ctx.fillRect(0, 0, this.width, this.height);
+          ctx.restore();
+
+          this.fadeAccumulator = 0;
+        }
+
+        draw(ctx) {
+          if (!this.enabled || !this.texture) return;
+
+          const layer = this.lctx;
+
+          layer.clearRect(0, 0, this.width, this.height);
+          layer.globalCompositeOperation = "source-over";
+
+          const corners = [
+            [0, 0, 0],
+            [this.width, 0, Math.PI / 2],
+            [this.width, this.height, Math.PI],
+            [0, this.height, -Math.PI / 2],
+          ];
+
+          for (const [x, y, rotation] of corners) {
+            layer.save();
+            layer.translate(x, y);
+            layer.rotate(rotation);
+            layer.drawImage(this.texture, 0, 0);
+            layer.restore();
+          }
+
+          layer.save();
+          layer.globalCompositeOperation = "destination-out";
+          layer.drawImage(this.melt, 0, 0);
+          layer.restore();
+
+          ctx.drawImage(this.layer, 0, 0);
+        }
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Cursor trail                                                       */
+      /* ------------------------------------------------------------------ */
+
+      const MAX_SPARKS = 240;
+
+      class CursorTrail {
+        constructor() {
+          this.sparks = [];
+          this.lastX = Number.NEGATIVE_INFINITY;
+          this.lastY = Number.NEGATIVE_INFINITY;
+          this.glowX = -1000;
+          this.glowY = -1000;
+        }
+
+        setCursor(x, y) {
+          this.glowX = x;
+          this.glowY = y;
+
+          if (!Number.isFinite(this.lastX)) {
+            this.lastX = x;
+            this.lastY = y;
+            return;
+          }
+
+          const dx = x - this.lastX;
+          const dy = y - this.lastY;
+          const distance = Math.hypot(dx, dy);
+          if (distance < 1.2) return;
+
+          const steps = Math.min(7, Math.max(1, Math.ceil(distance / 7)));
+          for (let i = 1; i <= steps; i++) {
+            const t = i / steps;
+            this.spawn(
+              this.lastX + dx * t,
+              this.lastY + dy * t,
+              dx,
+              dy,
+            );
+          }
+
+          this.lastX = x;
+          this.lastY = y;
+        }
+
+        update(dt) {
+          for (let i = this.sparks.length - 1; i >= 0; i--) {
+            const spark = this.sparks[i];
+            spark.life -= dt;
+            if (spark.life <= 0) {
+              this.sparks[i] = this.sparks[this.sparks.length - 1];
+              this.sparks.pop();
+              continue;
+            }
+
+            spark.x += spark.vx * dt;
+            spark.y += spark.vy * dt;
+            spark.vy += 14 * dt;
+            spark.vx *= 1 - 1.6 * dt;
+            spark.vy *= 1 - 1.1 * dt;
+          }
+        }
+
+        draw(ctx) {
+          const { glowX, glowY } = this;
+          if (glowX < -100 || glowY < -100) return;
+
+          ctx.save();
+          ctx.globalCompositeOperation = "lighter";
+
+          const glow = ctx.createRadialGradient(
+            glowX,
+            glowY,
+            0,
+            glowX,
+            glowY,
+            92,
+          );
+          glow.addColorStop(0, "rgba(200, 232, 255, 0.14)");
+          glow.addColorStop(0.45, "rgba(170, 210, 255, 0.05)");
+          glow.addColorStop(1, "rgba(160, 200, 255, 0)");
+          ctx.fillStyle = glow;
+          ctx.fillRect(glowX - 92, glowY - 92, 184, 184);
+
+          for (const spark of this.sparks) {
+            const t = spark.life / spark.maxLife;
+            const alpha = Math.max(0, t * t);
+            ctx.globalAlpha = alpha * 0.9;
+            ctx.fillStyle = "rgba(225, 245, 255, 1)";
+            ctx.beginPath();
+            ctx.arc(
+              spark.x,
+              spark.y,
+              spark.size * (0.6 + t * 0.7),
+              0,
+              Math.PI * 2,
+            );
+            ctx.fill();
+          }
+
+          ctx.restore();
+        }
+
+        spawn(x, y, dx, dy) {
+          if (this.sparks.length >= MAX_SPARKS) return;
+
+          const distance = Math.hypot(dx, dy) || 1;
+          const nx = -dy / distance;
+          const ny = dx / distance;
+
+          const life = rand(0.45, 1.25);
+          this.sparks.push({
+            x: x + rand(-4, 4),
+            y: y + rand(-4, 4),
+            vx: nx * rand(-18, 18) - (dx / distance) * rand(6, 26),
+            vy:
+              ny * rand(-18, 18) -
+              (dy / distance) * rand(6, 26) -
+              rand(0, 10),
+            life,
+            maxLife: life,
+            size: rand(0.7, 2.5),
+          });
+        }
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Snowplow                                                           */
+      /* ------------------------------------------------------------------ */
+
+      class Snowplow {
+        constructor(width, height, snow) {
+          this.width = width;
+          this.height = height;
+          this.snow = snow;
+          this.manual = false;
+          this.active = false;
+          this.x = -80;
+          this.direction = 1;
+          this.clearAccumulator = 0;
+          this.spray = [];
+        }
+
+        resize(width, height) {
+          this.width = width;
+          this.height = height;
+          this.x = Math.min(this.x, width + 80);
+        }
+
+        setManual(enabled) {
+          this.manual = enabled;
+          if (enabled && !this.active) {
+            this.active = true;
+            this.x = -80;
+            this.direction = 1;
+          }
+        }
+
+        update(dt) {
+          if (this.manual) {
+            this.active = true;
+        } else if (
+          this.active &&
+          (this.x > this.width + 90 || this.x < -90)
+        ) {
+          this.active = false;
+        }
+
+          if (!this.active) {
+            if (!this.manual && this.snow.bottomLoad() > 0.3) {
+              this.active = true;
+              this.x = -80;
+              this.direction = 1;
+              this.clearAccumulator = 0;
+            } else {
+              return;
+            }
+          }
+
+          this.x += this.direction * 158 * dt;
+
+          if (this.manual) {
+            if (this.x > this.width + 95) {
+              this.x = this.width + 95;
+              this.direction = -1;
+            } else if (this.x < -95) {
+              this.x = -95;
+              this.direction = 1;
+            }
+          }
+
+          this.clearAccumulator += dt;
+          if (this.clearAccumulator >= 0.045) {
+            this.clearAccumulator = 0;
+            const bladeX = this.x + this.direction * 34;
+            const bladeY = this.height - 24;
+            this.snow.clearAt(bladeX, bladeY, 34);
+            this.spawnSpray(bladeX, bladeY);
+          }
+
+          for (let i = this.spray.length - 1; i >= 0; i--) {
+            const drop = this.spray[i];
+            drop.life -= dt;
+            if (drop.life <= 0) {
+              this.spray[i] = this.spray[this.spray.length - 1];
+              this.spray.pop();
+              continue;
+            }
+            drop.x += drop.vx * dt;
+            drop.y += drop.vy * dt;
+            drop.vy += 80 * dt;
+          }
+        }
+
+        draw(ctx, time) {
+          if (!this.active) return;
+
+          ctx.save();
+          ctx.globalCompositeOperation = "source-over";
+
+          for (const drop of this.spray) {
+            const alpha = Math.max(0, drop.life / drop.maxLife);
+            ctx.globalAlpha = alpha * 0.55;
+            ctx.fillStyle = "rgba(236, 248, 255, 1)";
+            ctx.beginPath();
+            ctx.arc(
+              drop.x,
+              drop.y,
+              drop.size * (0.5 + alpha * 0.6),
+              0,
+              Math.PI * 2,
+            );
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+
+          const bob = Math.sin(time * 11) * 1.4;
+
+          ctx.translate(this.x, this.height - 26 + bob);
+          ctx.scale(this.direction, 1);
+
+          const light = ctx.createLinearGradient(24, 0, 200, -18);
+          light.addColorStop(0, "rgba(255, 240, 180, 0.26)");
+          light.addColorStop(0.6, "rgba(255, 240, 180, 0.08)");
+          light.addColorStop(1, "rgba(255, 240, 180, 0)");
+          ctx.fillStyle = light;
+          ctx.beginPath();
+          ctx.moveTo(22, -4);
+          ctx.lineTo(200, -44);
+          ctx.lineTo(200, 24);
+          ctx.closePath();
+          ctx.fill();
+
+          ctx.fillStyle = "#cfe9ff";
+          ctx.beginPath();
+          ctx.moveTo(25, -10);
+          ctx.lineTo(40, -28);
+          ctx.lineTo(47, 10);
+          ctx.lineTo(30, 15);
+          ctx.closePath();
+          ctx.fill();
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.7)";
+          ctx.lineWidth = 1;
+          ctx.stroke();
+
+          ctx.fillStyle = "rgba(20, 30, 50, 0.22)";
+          ctx.beginPath();
+          ctx.ellipse(-2, 20, 34, 5, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = "#e4573f";
+          roundRect(ctx, -30, -15, 58, 25, 6);
+          ctx.fill();
+
+          ctx.fillStyle = "rgba(255, 255, 255, 0.18)";
+          roundRect(ctx, -27, -12, 52, 7, 3);
+          ctx.fill();
+
+          ctx.fillStyle = "#2b2f3a";
+          roundRect(ctx, -28, 8, 54, 9, 4);
+          ctx.fill();
+
+          ctx.fillStyle = "rgba(255, 255, 255, 0.22)";
+          for (let x = -22; x < 24; x += 9) {
+            ctx.beginPath();
+            ctx.arc(x, 12.5, 2.2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          ctx.fillStyle = "#f4f0e8";
+          roundRect(ctx, -12, -33, 24, 20, 5);
+          ctx.fill();
+
+          ctx.fillStyle = "#7fc7e8";
+          roundRect(ctx, -8, -29, 16, 11, 3);
+          ctx.fill();
+
+          ctx.fillStyle = "#ffd27a";
+          ctx.beginPath();
+          ctx.arc(0, -34, 2.4, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.restore();
+        }
+
+        spawnSpray(x, y) {
+          for (let i = 0; i < 2; i++) {
+            if (this.spray.length > 160) break;
+            const life = rand(0.25, 0.7);
+            this.spray.push({
+              x: x + rand(-6, 6),
+              y: y + rand(-8, 6),
+              vx: -this.direction * rand(20, 90) + rand(-34, 34),
+              vy: rand(-85, -25),
+              life,
+              maxLife: life,
+              size: rand(0.8, 2.6),
+            });
+          }
+        }
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* New Year countdown                                                 */
+      /* ------------------------------------------------------------------ */
+
+      class Countdown {
+        constructor() {
+          this.element = document.createElement("div");
+          this.element.className = "countdown";
+          this.element.innerHTML = `
+            <div class="countdown__title">New Year in</div>
+            <div class="countdown__grid">
+              <div class="countdown__cell">
+                <span class="countdown__value" data-unit="days">--</span>
+                <span class="countdown__unit">days</span>
+              </div>
+              <div class="countdown__cell">
+                <span class="countdown__value" data-unit="hours">--</span>
+                <span class="countdown__unit">hrs</span>
+              </div>
+              <div class="countdown__cell">
+                <span class="countdown__value" data-unit="minutes">--</span>
+                <span class="countdown__unit">min</span>
+              </div>
+              <div class="countdown__cell">
+                <span class="countdown__value" data-unit="seconds">--</span>
+                <span class="countdown__unit">sec</span>
+              </div>
+            </div>
+            <div class="countdown__year"></div>
+          `;
+          document.body.appendChild(this.element);
+
+          this.days = this.element.querySelector('[data-unit="days"]');
+          this.hours = this.element.querySelector('[data-unit="hours"]');
+          this.minutes = this.element.querySelector('[data-unit="minutes"]');
+          this.seconds = this.element.querySelector('[data-unit="seconds"]');
+          this.year = this.element.querySelector(".countdown__year");
+
+          this.tick();
+          this.timer = window.setInterval(() => this.tick(), 250);
+        }
+
+        setVisible(visible) {
+          this.element.style.display = visible ? "flex" : "none";
+        }
+
+        tick() {
+          const now = new Date();
+          const targetYear = now.getFullYear() + 1;
+          const target = new Date(targetYear, 0, 1, 0, 0, 0, 0);
+          const diff = Math.max(0, target.getTime() - now.getTime());
+
+          const days = Math.floor(diff / 86400000);
+          const hours = Math.floor((diff / 3600000) % 24);
+          const minutes = Math.floor((diff / 60000) % 60);
+          const seconds = Math.floor((diff / 1000) % 60);
+
+          this.days.textContent = String(days);
+          this.hours.textContent = String(hours).padStart(2, "0");
+          this.minutes.textContent = String(minutes).padStart(2, "0");
+          this.seconds.textContent = String(seconds).padStart(2, "0");
+          this.year.textContent = String(targetYear);
+        }
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Renderer                                                           */
+      /* ------------------------------------------------------------------ */
+
+      class Renderer {
+        constructor(canvas) {
+          this.canvas = canvas;
+          this.ctx = canvas.getContext("2d", { alpha: true });
+          this.width = 1;
+          this.height = 1;
+          this.dpr = 1;
+          this.initialized = false;
+          this.raf = 0;
+          this.last = 0;
+          this.elapsed = 0;
+          this.settings = {
+            snow: true,
+            aurora: true,
+            frost: true,
+            plow: false,
+            countdown: true,
+          };
+
+          this.countdown = new Countdown();
+          this.resize();
+
+          this.aurora = new Aurora(this.width, this.height);
+          this.snow = new SnowSystem(this.width, this.height);
+          this.frost = new Frost(this.width, this.height);
+          this.trail = new CursorTrail();
+          this.plow = new Snowplow(this.width, this.height, this.snow);
+          this.initialized = true;
+
+          window.addEventListener("resize", () => this.resize());
+          this.applySettings(this.settings);
+        }
+
+        applySettings(settings) {
+          this.settings = settings;
+          this.aurora.enabled = settings.aurora;
+          this.snow.enabled = settings.snow;
+          this.frost.enabled = settings.frost;
+          this.plow.setManual(settings.plow);
+          this.countdown.setVisible(settings.countdown);
+        }
+
+        setWindows(rects) {
+          this.snow.setWindows(rects);
+        }
+
+        setCursor(position) {
+          if (
+            !Number.isFinite(position.x) ||
+            !Number.isFinite(position.y)
+          ) {
+            return;
+          }
+          this.trail.setCursor(position.x, position.y);
+          this.frost.setCursor(position.x, position.y);
+        }
+
+        start() {
+          if (this.raf) return;
+          this.last = performance.now();
+          this.raf = requestAnimationFrame((now) => this.loop(now));
+        }
+
+        resize() {
+          this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+          this.width = Math.max(1, window.innerWidth);
+          this.height = Math.max(1, window.innerHeight);
+
+          this.canvas.width = Math.floor(this.width * this.dpr);
+          this.canvas.height = Math.floor(this.height * this.dpr);
+          this.canvas.style.width = `${this.width}px`;
+          this.canvas.style.height = `${this.height}px`;
+          this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+
+          if (!this.initialized) return;
+
+          this.aurora.resize(this.width, this.height);
+          this.snow.resize(this.width, this.height);
+          this.frost.resize(this.width, this.height);
+          this.plow.resize(this.width, this.height);
+        }
+
+        loop(now) {
+          const raw = (now - this.last) / 1000;
+          const dt = Math.min(0.05, raw > 0 ? raw : 0.016);
+          this.last = now;
+          this.elapsed += dt;
+
+          this.update(dt, this.elapsed);
+          this.draw();
+          this.raf = requestAnimationFrame((next) => this.loop(next));
+        }
+
+        update(dt, time) {
+          this.aurora.update(dt);
+          this.snow.update(dt, time);
+          this.frost.update(dt);
+          this.trail.update(dt);
+          this.plow.update(dt);
+        }
+
+        draw() {
+          const ctx = this.ctx;
+          ctx.clearRect(0, 0, this.width, this.height);
+
+          this.aurora.draw(ctx);
+          this.snow.draw(ctx);
+          this.trail.draw(ctx);
+          this.frost.draw(ctx);
+          this.plow.draw(ctx, this.elapsed);
+        }
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Boot                                                               */
+      /* ------------------------------------------------------------------ */
+
+      const canvas = document.querySelector("#scene");
+      const renderer = new Renderer(canvas);
+
+      async function boot() {
+        const tauri = window.__TAURI__;
+
+        if (!tauri) {
+          renderer.start();
+          return;
+        }
+
+        const { invoke } = tauri.core;
+        const { listen } = tauri.event;
+
+        const [settings, windows] = await Promise.all([
+          invoke("get_settings"),
+          invoke("list_windows"),
+        ]);
+
+        renderer.applySettings(settings);
+        renderer.setWindows(windows);
+        renderer.start();
+
+        await listen("settings-changed", (event) =>
+          renderer.applySettings(event.payload),
+        );
+        await listen("cursor", (event) => renderer.setCursor(event.payload));
+        await listen("windows-changed", (event) =>
+          renderer.setWindows(event.payload),
+        );
+      }
+
+      boot().catch((error) => {
+        console.error("Flake failed to start:", error);
+      });
+    </script>
+  </body>
+</html>
