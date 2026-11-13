@@ -11,7 +11,7 @@ const TUNE = {
 const STEP = 3;
 let S = { density: 'medium', wind: true, accumulate: true, paused: false };
 let W = 0, H = 0, DPR = 1, groundY = 0, raf = 0, last = 0;
-let flakes = [], debris = [], ledge = null;
+let flakes = [], debris = [], ledges = [];
 const cur = { x: -999, y: -999, vx: 0, vy: 0, t: 0 };
 const rand = (a, b) => a + Math.random() * (b - a);
 
@@ -60,13 +60,46 @@ function fit() {
 }
 const wind = (t) => !S.wind ? 0 : TUNE.windMax * (0.5 * Math.sin(t * 0.13) + 0.35 * Math.sin(t * 0.37 + 1.7) + Math.max(0, Math.sin(t * 0.05)) * 0.6 * Math.sin(t * 0.9));
 
-// ---- Qor uyumi (balandliklar xaritasi) ----
-function addSnow(L, x, amt) {
-  const c = (x / STEP) | 0;
+// ---- Qor uyumi: har bir "tokcha" (ekran osti yoki oyna tepasi) o'z balandliklar xaritasiga ega ----
+function mkLedge(id, w, seed) {
+  const n = Math.ceil(w / STEP), k = id === 'ground' ? 1 : 0.55;
+  return { id, x: 0, y: 0, tx: 0, ty: 0, w, segs: [[0, w]], h: new Float32Array(n),
+    cap: Float32Array.from({ length: n }, (_, i) => TUNE.maxPile * k * (0.55 + 0.45 * (0.5 + 0.5 * Math.sin(i * 0.045 + seed) * Math.sin(i * 0.013 + seed * 2)))) };
+}
+function setGround() {
+  const g = mkLedge('ground', W, 1); g.y = g.ty = groundY;
+  ledges = ledges.filter((L) => L.id !== 'ground'); ledges.unshift(g);
+}
+function setWindows(list) { // oyna uyumi oyna bilan birga ko'chadi
+  const old = new Map(ledges.map((L) => [L.id, L])), next = [old.get('ground')];
+  for (const d of list) {
+    let L = old.get(d.id);
+    if (!L || Math.abs(L.w - d.w) > 1) {
+      const nl = mkLedge(d.id, d.w, (d.id % 97) + 1);
+      if (L) { nl.h.set(L.h.subarray(0, Math.min(L.h.length, nl.h.length))); nl.x = L.x; nl.y = L.y; } else { nl.x = d.x; nl.y = d.y; }
+      L = nl;
+    }
+    L.tx = d.x; L.ty = d.y; L.segs = d.segs; next.push(L);
+  }
+  ledges = next;
+}
+function addSnow(L, lx, amt) {
+  const c = (lx / STEP) | 0;
   for (let k = -4; k <= 4; k++) {
     const i = c + k; if (i < 0 || i >= L.h.length) continue;
     L.h[i] = Math.min(L.cap[i], L.h[i] + amt * Math.exp(-k * k / 6));
   }
+}
+function land(f, py) { // parcha tokchaning tepasidan o'tsa qo'nadi
+  const a = f.size * 0.25;
+  for (const L of ledges) {
+    const lx = f.x - L.x; if (lx < 0 || lx >= L.w) continue;
+    const i = (lx / STEP) | 0;
+    if (i >= L.h.length || !L.segs.some((s) => lx >= s[0] && lx < s[1])) continue;
+    const top = L.y - L.h[i];
+    if (py + a <= top + 1 && f.y + a >= top) { addSnow(L, lx, f.size * 0.12 * TUNE.pileGrowth); return true; }
+  }
+  return false;
 }
 function relax(L) { // qor tik turmasligi uchun yonbag'irlarni yumshatadi
   const h = L.h, m = 1.1;
@@ -77,31 +110,34 @@ function relax(L) { // qor tik turmasligi uchun yonbag'irlarni yumshatadi
   }
 }
 function sweep(L, sp, dt) { // kursor uyumni supuradi
-  const R = TUNE.sweepRadius;
-  const c0 = Math.max(0, ((cur.x - R) / STEP) | 0), c1 = Math.min(L.h.length - 1, ((cur.x + R) / STEP) | 0);
+  const R = TUNE.sweepRadius, cx = cur.x - L.x;
+  const c0 = Math.max(0, ((cx - R) / STEP) | 0), c1 = Math.min(L.h.length - 1, ((cx + R) / STEP) | 0);
   for (let i = c0; i <= c1; i++) {
-    const x = i * STEP, u = (x - cur.x) / R, top = L.y - L.h[i];
-    if (L.h[i] < 0.3 || cur.y < top - 30 || cur.y > L.y + 6) continue;
+    const x = i * STEP, u = (x - cx) / R, top = L.y - L.h[i];
+    if (L.h[i] < 0.3 || cur.y < top - 30 || cur.y > L.y + 6 || !L.segs.some((s) => x >= s[0] && x < s[1])) continue;
     const take = Math.min(L.h[i], (1 - u * u) * sp * dt * 0.05);
     L.h[i] -= take;
     if (take > 0.15 && debris.length < 250 && Math.random() < 0.3)
-      debris.push({ x, y: top, vx: cur.vx * 0.25 + rand(-70, 70), vy: rand(-160, -40), life: 1, s: rand(1.5, 3.5) });
+      debris.push({ x: L.x + x, y: top, vx: cur.vx * 0.25 + rand(-70, 70), vy: rand(-160, -40), life: 1, s: rand(1.5, 3.5) });
   }
 }
 function drawPile(L) {
   let mx = 0; for (const v of L.h) if (v > mx) mx = v;
   if (mx < 0.4) return;
-  const g = ctx.createLinearGradient(0, L.y - mx, 0, L.y);
+  ctx.save(); ctx.translate(L.x, L.y);
+  ctx.beginPath(); for (const [a, b] of L.segs) ctx.rect(a, -mx - 6, b - a, mx + 8); ctx.clip();
+  const g = ctx.createLinearGradient(0, -mx, 0, 0);
   g.addColorStop(0, '#fff'); g.addColorStop(1, '#cddcf0');
-  ctx.beginPath(); ctx.moveTo(0, L.y);
-  for (let i = 0; i < L.h.length; i++) ctx.lineTo(i * STEP, L.y - L.h[i]);
-  ctx.lineTo(W, L.y); ctx.closePath(); ctx.fillStyle = g; ctx.fill();
+  ctx.beginPath(); ctx.moveTo(0, 0);
+  for (let i = 0; i < L.h.length; i++) ctx.lineTo(i * STEP, -L.h[i]);
+  ctx.lineTo(L.w, 0); ctx.closePath(); ctx.fillStyle = g; ctx.fill();
   ctx.beginPath(); let on = false;
   for (let i = 0; i < L.h.length; i++) {
-    const x = i * STEP, y = L.y - L.h[i];
+    const x = i * STEP, y = -L.h[i];
     if (L.h[i] > 0.3) { on ? ctx.lineTo(x, y) : ctx.moveTo(x, y); on = true; } else on = false;
   }
   ctx.strokeStyle = 'rgba(140,165,205,.55)'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.restore();
 }
 
 // ---- Asosiy sikl ----
@@ -110,7 +146,6 @@ function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   const t = now / 1000, w = wind(t);
   const sp = now - cur.t < 80 ? Math.hypot(cur.vx, cur.vy) : 0;
-  const L = ledge;
 
   for (const f of flakes) {
     f.ph += f.sw * dt; f.rot += f.spin * dt;
@@ -123,22 +158,22 @@ function frame(now) {
       }
     }
     const damp = Math.exp(-dt * 2.2); f.ix *= damp; f.iy *= damp;
-    f.x += (f.vx + f.ix) * dt; f.y += (f.vy + f.iy) * dt;
+    const py = f.y; f.x += (f.vx + f.ix) * dt; f.y += (f.vy + f.iy) * dt;
     if (f.x < -60) f.x = W + 60; else if (f.x > W + 60) f.x = -60;
-    if (S.accumulate && f.z > 0.35 && f.z < 0.85) { // faqat o'rta qatlam qo'nadi
-      const i = (f.x / STEP) | 0;
-      if (i >= 0 && i < L.h.length && f.y + f.size * 0.25 >= L.y - L.h[i]) { addSnow(L, f.x, f.size * 0.12 * TUNE.pileGrowth); newFlake(f); continue; }
-    }
+    if (S.accumulate && f.z > 0.35 && f.z < 0.85 && land(f, py)) { newFlake(f); continue; } // faqat o'rta qatlam qo'nadi
     if (f.y > (f.z > 0.85 ? H + 40 : groundY) || f.y < -150) newFlake(f);
   }
   for (let i = debris.length - 1; i >= 0; i--) {
     const p = debris[i]; p.vy += 420 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt * 1.3;
     if (p.life <= 0) debris.splice(i, 1);
   }
-  if (S.accumulate) { if (sp > 80) sweep(L, sp, dt); relax(L); }
+  for (const L of ledges) {
+    if (L.id !== 'ground') { const k = Math.min(1, dt * 20); L.x += (L.tx - L.x) * k; L.y += (L.ty - L.y) * k; }
+    if (S.accumulate) { if (sp > 80) sweep(L, sp, dt); relax(L); }
+  }
 
   ctx.clearRect(0, 0, W, H);
-  if (S.accumulate) drawPile(L);
+  if (S.accumulate) for (const L of ledges) drawPile(L);
   for (const kind of ['dot', 'crystal', 'soft']) for (const f of flakes) { // yaqin parchalar tepada
     if (f.kind !== kind) continue;
     ctx.globalAlpha = f.a; const s = f.size;
@@ -153,16 +188,15 @@ function resize() {
   DPR = window.devicePixelRatio || 1; W = innerWidth; H = innerHeight;
   cv.width = W * DPR; cv.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   if (!groundY || groundY > H) groundY = H;
-  const n = Math.ceil(W / STEP);
-  ledge = { y: groundY, h: new Float32Array(n),
-    cap: Float32Array.from({ length: n }, (_, i) => TUNE.maxPile * (0.55 + 0.45 * (0.5 + 0.5 * Math.sin(i * 0.045) * Math.sin(i * 0.013 + 1)))) };
+  setGround();
   fit();
 }
 function run() { cancelAnimationFrame(raf); if (S.paused) { ctx.clearRect(0, 0, W, H); return; } last = performance.now(); raf = requestAnimationFrame(frame); }
 
 snow.onInit((d) => { groundY = d.groundY; S = d.settings; resize(); run(); });
-snow.onSettings((s) => { S = s; fit(); if (!S.accumulate && ledge) ledge.h.fill(0); run(); });
-snow.onClear(() => ledge && ledge.h.fill(0));
+snow.onSettings((s) => { S = s; fit(); if (!S.accumulate) ledges.forEach((L) => L.h.fill(0)); run(); });
+snow.onClear(() => ledges.forEach((L) => L.h.fill(0)));
+snow.onWindows((d) => W && setWindows(d));
 snow.onCursor((p) => {
   const now = performance.now(), dt = (now - cur.t) / 1000;
   if (dt > 0 && dt < 0.2) { cur.vx = cur.vx * 0.5 + (p.x - cur.x) / dt * 0.5; cur.vy = cur.vy * 0.5 + (p.y - cur.y) / dt * 0.5; }

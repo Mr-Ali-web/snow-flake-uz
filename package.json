@@ -1,15 +1,48 @@
 {
   "name": "snow-flake-uz",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Ish stolida qor yog'adi (Windows va macOS)",
   "main": "main.js",
-  "scripts": { "start": "electron .", "dist": "electron-builder" },
-  "devDependencies": { "electron": "^33.0.0", "electron-builder": "^25.0.0" },
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
   "build": {
     "appId": "uz.snowflake.app",
     "productName": "Snow Flake UZ",
-    "files": ["main.js", "preload.js", "overlay.html", "renderer.js", "assets/**"],
-    "mac": { "category": "public.app-category.utilities", "target": ["dmg"] },
-    "win": { "target": ["nsis"] }
-  }
+    "files": [
+      "main.js",
+      "preload.js",
+      "scanner.js",
+      "ledges.js",
+      "overlay.html",
+      "renderer.js",
+      "assets/**",
+      "scripts/**"
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        "dmg"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "asarUnpack": [
+      "scripts/**"
+    ],
+    "publish": {
+      "provider": "github"
+    }
+  },
+  "author": "Mr-Ali-web",
+  "license": "MIT",
+  "repository": "github:Mr-Ali-web/snow-flake-uz"
 }

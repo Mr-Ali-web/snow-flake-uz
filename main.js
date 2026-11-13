@@ -1,15 +1,19 @@
 const { app, BrowserWindow, Tray, Menu, screen, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const scanner = require('./scanner');
+const { ledgesFor } = require('./ledges');
 
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on('window-all-closed', () => {}); // tray ilova: oynalar yopilsa ham ishlayveradi
 
-const defaults = { density: 'medium', wind: true, accumulate: true, paused: false };
+const defaults = { density: 'medium', wind: true, accumulate: true, windows: true, paused: false };
 let settings = { ...defaults };
 let overlays = [];
 let tray = null;
 let lastCursor = { x: -1, y: -1 };
+let rects = [];
+let stopScan = null;
 
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
 const save = () => { try { fs.writeFileSync(settingsFile(), JSON.stringify(settings)); } catch {} };
@@ -30,17 +34,36 @@ function createOverlays() {
     win.setIgnoreMouseEvents(true);
     win.setBounds(bounds);
     win.loadFile(path.join(__dirname, 'overlay.html'));
+    const entry = { win, bounds, ready: false, key: '' };
     win.webContents.on('did-finish-load', () => {
       // qor Dock/taskbar ustiga qo'nadi: workArea pastki chegarasi
       win.webContents.send('init', { groundY: workArea.y + workArea.height - bounds.y, settings });
       win.showInactive();
+      entry.ready = true; sendWindows(entry);
     });
-    return { win, bounds };
+    return entry;
   });
 }
 
 const broadcast = (ch, data) => overlays.forEach(({ win }) => !win.isDestroyed() && win.webContents.send(ch, data));
-function update(patch) { settings = { ...settings, ...patch }; save(); broadcast('settings', settings); buildMenu(); }
+
+function sendWindows(o) {
+  if (o.win.isDestroyed() || !o.ready) return;
+  const list = settings.windows && !settings.paused ? ledgesFor(rects, o.bounds) : [];
+  const key = JSON.stringify(list);
+  if (key === o.key) return;
+  o.key = key; o.win.webContents.send('windows', list);
+}
+const pushWindows = () => overlays.forEach(sendWindows);
+function onRects(raw) {
+  rects = raw.map(([id, l, t, r, b]) => {
+    if (process.platform !== 'win32') return [id, l, t, r, b]; // Windows: piksel -> DIP
+    const a = screen.screenToDipPoint({ x: l, y: t }), c = screen.screenToDipPoint({ x: r, y: b });
+    return [id, a.x, a.y, c.x, c.y];
+  });
+  pushWindows();
+}
+function update(patch) { settings = { ...settings, ...patch }; save(); broadcast('settings', settings); pushWindows(); buildMenu(); }
 
 function buildMenu() {
   const dens = (id, label) => ({ label, type: 'radio', checked: settings.density === id, click: () => update({ density: id }) });
@@ -48,6 +71,7 @@ function buildMenu() {
     { label: 'Qor kuchi', submenu: [dens('light', 'Yengil'), dens('medium', "O'rtacha"), dens('heavy', 'Kuchli')] },
     { label: 'Shamol', type: 'checkbox', checked: settings.wind, click: (i) => update({ wind: i.checked }) },
     { label: 'Qor uyumi', type: 'checkbox', checked: settings.accumulate, click: (i) => update({ accumulate: i.checked }) },
+    { label: 'Oynalar ustida qor', type: 'checkbox', checked: settings.windows, click: (i) => update({ windows: i.checked }) },
     { label: "To'xtatib turish", type: 'checkbox', checked: settings.paused, click: (i) => update({ paused: i.checked }) },
     { label: 'Uyumni tozalash', click: () => broadcast('clear') },
     { type: 'separator' },
@@ -65,6 +89,8 @@ app.whenReady().then(() => {
   tray.setToolTip('Snow Flake UZ');
   buildMenu();
   createOverlays();
+  stopScan = scanner.start(onRects);
+  app.on('will-quit', () => stopScan && stopScan());
 
   let t; const rebuild = () => { clearTimeout(t); t = setTimeout(createOverlays, 500); };
   ['display-added', 'display-removed', 'display-metrics-changed'].forEach((e) => screen.on(e, rebuild));
